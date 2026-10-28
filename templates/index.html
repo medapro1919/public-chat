@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Open Chat</title>
+  <style>
+    :root { color-scheme: dark; --bg:#0b1020; --panel:#121a2d; --line:#27334d; --text:#eef3ff; --muted:#9aa8c4; --accent:#8b5cf6; }
+    * { box-sizing:border-box; }
+    body { margin:0; min-height:100vh; display:grid; place-items:center; padding:20px; background:radial-gradient(ellipse at top,#182344,var(--bg) 60%); color:var(--text); font:16px/1.45 system-ui,-apple-system,sans-serif; }
+    .app { width:min(760px,100%); height:min(820px,calc(100vh - 40px)); min-height:520px; display:flex; flex-direction:column; background:rgba(18,26,45,.96); border:1px solid var(--line); border-radius:22px; overflow:hidden; box-shadow:0 24px 80px #0006; }
+    header { padding:22px 24px; border-bottom:1px solid var(--line); display:flex; align-items:center; justify-content:space-between; gap:12px; }
+    h1 { margin:0; font-size:1.35rem; letter-spacing:-.03em; } .sub { color:var(--muted); font-size:.88rem; margin-top:4px; }
+    .status { color:#a7f3d0; font-size:.8rem; white-space:nowrap; } .status:before { content:""; display:inline-block; width:7px;height:7px;border-radius:50%;background:#34d399;margin-right:7px; }
+    .warning { padding:10px 24px; background:#2a2140; color:#dcd3ff; font-size:.82rem; border-bottom:1px solid var(--line); }
+    #messages { flex:1; overflow:auto; padding:20px 24px; display:flex; flex-direction:column; gap:12px; }
+    .empty { margin:auto; color:var(--muted); text-align:center; }
+    .msg { overflow-wrap:anywhere; border:1px solid var(--line); border-radius:14px; padding:10px 13px; background:#182238; }
+    .meta { display:flex; gap:10px; align-items:baseline; margin-bottom:4px; } .name { font-weight:700; color:#c4b5fd; } .time { color:var(--muted); font-size:.75rem; }
+    .body { white-space:pre-wrap; }
+    form { padding:16px; border-top:1px solid var(--line); display:grid; grid-template-columns:140px 1fr auto; gap:9px; }
+    input,button { font:inherit; border-radius:11px; border:1px solid var(--line); padding:12px; min-width:0; }
+    input { background:#0d1425; color:var(--text); outline:none; } input:focus { border-color:var(--accent); }
+    button { background:var(--accent); color:white; border:0; font-weight:700; cursor:pointer; padding-inline:18px; } button:disabled { opacity:.5; cursor:not-allowed; }
+    #notice { min-height:20px; padding:0 20px 8px; color:#fbbf24; font-size:.82rem; }
+    @media(max-width:560px) { body { padding:0; } .app { height:100vh; min-height:0; border-radius:0; } header { padding:18px; } #messages { padding:16px; } form { grid-template-columns:1fr auto; } #username { grid-column:1/-1; } .warning { padding-inline:18px; } }
+  </style>
+</head>
+<body>
+  <main class="app">
+    <header>
+      <div><h1>Open Chat</h1><div class="sub">A little corner of the internet.</div></div>
+      <div class="status" id="status">Connecting</div>
+    </header>
+    <div class="warning">Public chat: don't share passwords, your address, school details, or other private information. Messages are not saved permanently.</div>
+    <section id="messages" aria-live="polite"><div class="empty" id="empty">Joining the chat…</div></section>
+    <div id="notice" role="status"></div>
+    <form id="form">
+      <input id="username" maxlength="20" placeholder="Username" autocomplete="nickname" aria-label="Username">
+      <input id="message" maxlength="500" placeholder="Type a message…" autocomplete="off" aria-label="Message" required>
+      <button id="send" type="submit">Send</button>
+    </form>
+  </main>
+  <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+  <script>
+    const socket = io();
+    const messages = document.getElementById('messages');
+    const empty = document.getElementById('empty');
+    const form = document.getElementById('form');
+    const username = document.getElementById('username');
+    const input = document.getElementById('message');
+    const status = document.getElementById('status');
+    const notice = document.getElementById('notice');
+
+    function addMessage(item) {
+      if (empty) empty.remove();
+      const card = document.createElement('article');
+      card.className = 'msg';
+      const meta = document.createElement('div');
+      meta.className = 'meta';
+      const name = document.createElement('span');
+      name.className = 'name';
+      name.textContent = item.username;
+      const time = document.createElement('span');
+      time.className = 'time';
+      time.textContent = item.time || '';
+      const body = document.createElement('div');
+      body.className = 'body';
+      // textContent prevents messages being interpreted as HTML.
+      body.textContent = item.message;
+      meta.append(name, time);
+      card.append(meta, body);
+      messages.append(card);
+      while (messages.children.length > 101) messages.removeChild(messages.firstChild);
+      messages.scrollTop = messages.scrollHeight;
+    }
+
+    socket.on('connect', () => { status.textContent = 'Connected'; });
+    socket.on('disconnect', () => { status.textContent = 'Reconnecting…'; });
+    socket.on('history', history => { history.forEach(addMessage); });
+    socket.on('chat_message', addMessage);
+    socket.on('notice', data => { notice.textContent = data.text || 'Message not sent.'; });
+
+    form.addEventListener('submit', event => {
+      event.preventDefault();
+      const message = input.value.trim();
+      if (!message) return;
+      socket.emit('chat_message', { username: username.value.trim() || 'Guest', message });
+      input.value = '';
+      notice.textContent = '';
+      input.focus();
+    });
+  </script>
+</body>
+</html>
