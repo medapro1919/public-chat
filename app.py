@@ -1,3 +1,4 @@
+import os
 from collections import deque
 from datetime import datetime, timezone
 import time
@@ -6,8 +7,8 @@ from flask import Flask, render_template, request
 from flask_socketio import SocketIO, emit
 
 app = Flask(__name__)
-app.config["SECRET_KEY"] = "change-this-to-a-long-random-secret-before-deploying"
-socketio = SocketIO(app, cors_allowed_origins=[], async_mode="threading")
+app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "local-development-only")
+socketio = SocketIO(app, async_mode="threading")
 
 # In-memory only: messages disappear when the server restarts.
 recent_messages = deque(maxlen=100)
