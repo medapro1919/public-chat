@@ -1,13 +1,14 @@
-from collections import deque
-from datetime import datetime, timezone
-import hmac
 import os
+import re
+import hmac
 import time
+from datetime import datetime
 from threading import RLock
 
-from flask import Flask, render_template, request
-from flask_socketio import SocketIO, emit, join_room, leave_room
-from werkzeug.security import check_password_hash, generate_password_hash
+from flask import Flask, render_template
+from flask_socketio import SocketIO, join_room as socket_join_room, leave_room as socket_leave_room
+from werkzeug.security import generate_password_hash, check_password_hash
+
 
 app = Flask(__name__)
 app.config["SECRET_KEY"] = os.environ.get(
@@ -17,291 +18,360 @@ app.config["SECRET_KEY"] = os.environ.get(
 socketio = SocketIO(app, async_mode="threading")
 
 MASTER_PASSWORD = os.environ.get("MASTER_PASSWORD", "")
+
 MAX_ROOMS = 100
 MAX_MESSAGES_PER_ROOM = 100
 MAX_MESSAGE_LENGTH = 500
+MAX_ROOM_NAME_LENGTH = 40
 MIN_PASSWORD_LENGTH = 8
 MAX_PASSWORD_LENGTH = 128
-MIN_SECONDS_BETWEEN_MESSAGES = 0.8
+MESSAGE_COOLDOWN = 0.8
 
-# In-memory only. Rooms and messages reset when the server restarts.
+# All data is temporary and will reset when the server restarts.
 rooms = {}
 current_room = {}
 silent_join = {}
 last_sent = {}
 failed_joins = {}
-rooms_lock = RLock()
+
+lock = RLock()
 
 
-def clean_room_name(value):
-    value = str(value or "").strip()
-    value = "".join(
-        ch for ch in value if ch.isalnum() or ch in " _-"
-    )
-    return " ".join(value.split())[:30].strip()
-
-
-def room_key(name):
-    return name.casefold()
-
-
-def channel_name(key):
-    return "chat-room:" + key
-
-
-def public_room_list():
-    with rooms_lock:
-        result = [
-            {
-                "name": room["name"],
-                "users": sum(
-                    1 for joined in current_room.values()
-                    if joined == key
-                ),
-            }
-            for key, room in rooms.items()
-        ]
-    return sorted(result, key=lambda item: item["name"].casefold())
-
-
-def post_system_message(key, message):
-    """Save a system message and send it only to that room."""
-    item = {
-        "username": "System",
-        "message": message,
-        "time": datetime.now(timezone.utc).strftime("%H:%M UTC"),
-        "system": True,
-    }
-
-    with rooms_lock:
-        room = rooms.get(key)
-        if room is None:
-            return
-        room["history"].append(item)
-
-    socketio.emit("chat_message", item, to=channel_name(key))
-
-
-def switch_to_room(key, silent=False):
-    sid = request.sid
-    old_key = current_room.get(sid)
-
-    if old_key == key:
-        return
-
-    if old_key:
-        post_system_message(old_key, "A user has left")
-        leave_room(channel_name(old_key))
-
-    join_room(channel_name(key))
-    current_room[sid] = key
-    silent_join[sid] = silent
-
-
-@app.get("/")
+@app.route("/")
 def index():
     return render_template("index.html")
 
 
+def current_time():
+    return datetime.now().strftime("%H:%M")
+
+
+def room_list_data():
+    """Return the public room list and current occupant counts."""
+    with lock:
+        result = []
+
+        for name in sorted(rooms.keys(), key=str.lower):
+            users = sum(
+                1 for room_name in current_room.values()
+                if room_name == name
+            )
+
+            result.append({
+                "name": name,
+                "users": users,
+            })
+
+        return result
+
+
+def broadcast_room_list():
+    socketio.emit("room_list", room_list_data())
+
+
+def post_chat_message(room_name, username, message, system=False):
+    """Store and broadcast a message to people currently in a room."""
+    with lock:
+        room = rooms.get(room_name)
+
+        if room is None:
+            return
+
+        entry = {
+            "username": username,
+            "message": message,
+            "time": current_time(),
+            "system": system,
+        }
+
+        room["messages"].append(entry)
+
+        if len(room["messages"]) > MAX_MESSAGES_PER_ROOM:
+            room["messages"] = room["messages"][-MAX_MESSAGES_PER_ROOM:]
+
+    socketio.emit("chat_message", entry, to=room_name)
+
+
+def delete_room_if_empty(room_name):
+    """Delete a room and its history if nobody remains in it."""
+    with lock:
+        if room_name not in rooms:
+            return False
+
+        occupants = sum(
+            1 for name in current_room.values()
+            if name == room_name
+        )
+
+        if occupants == 0:
+            del rooms[room_name]
+            print(f"Deleted empty room: {room_name}")
+            return True
+
+        return False
+
+
+def remove_user_from_room(sid, announce=True):
+    """Remove a socket from its room and delete the room if it is empty."""
+    with lock:
+        room_name = current_room.pop(sid, None)
+        was_silent = silent_join.pop(sid, False)
+        last_sent.pop(sid, None)
+        failed_joins.pop(sid, None)
+
+    if room_name is None:
+        return
+
+    socket_leave_room(room_name, sid=sid)
+
+    # Notify remaining users unless this user joined silently with the
+    # master password.
+    if announce and not was_silent:
+        post_chat_message(
+            room_name,
+            "System",
+            "A user has left",
+            system=True,
+        )
+
+    delete_room_if_empty(room_name)
+    broadcast_room_list()
+
+
 @socketio.on("connect")
-def on_connect(auth=None):
-    emit("room_list", public_room_list())
+def handle_connect():
+    broadcast_room_list()
 
 
 @socketio.on("create_room")
-def on_create_room(data):
+def handle_create_room(data):
     if not isinstance(data, dict):
-        emit("room_error", {"text": "Invalid room details."})
+        socketio.emit("room_error", {"text": "Invalid room details."}, to=request_sid())
         return
 
-    name = clean_room_name(data.get("name", ""))
+    sid = request_sid()
+    name = str(data.get("name", "")).strip()
     password = str(data.get("password", ""))
 
-    if not name:
-        emit("room_error", {
-            "text": "Use letters, numbers, spaces, _ or - for the room name."
-        })
+    if not name or len(name) > MAX_ROOM_NAME_LENGTH:
+        socketio.emit(
+            "room_error",
+            {"text": f"Room name must be between 1 and {MAX_ROOM_NAME_LENGTH} characters."},
+            to=sid,
+        )
         return
 
-    if not MIN_PASSWORD_LENGTH <= len(password) <= MAX_PASSWORD_LENGTH:
-        emit("room_error", {
-            "text": f"Passwords must be {MIN_PASSWORD_LENGTH}–{MAX_PASSWORD_LENGTH} characters."
-        })
+    if not re.fullmatch(r"[\w -]+", name, flags=re.UNICODE):
+        socketio.emit(
+            "room_error",
+            {"text": "Room names can only contain letters, numbers, spaces, underscores, and hyphens."},
+            to=sid,
+        )
         return
 
-    key = room_key(name)
+    if len(password) < MIN_PASSWORD_LENGTH or len(password) > MAX_PASSWORD_LENGTH:
+        socketio.emit(
+            "room_error",
+            {"text": f"Room password must be {MIN_PASSWORD_LENGTH}–{MAX_PASSWORD_LENGTH} characters long."},
+            to=sid,
+        )
+        return
 
-    with rooms_lock:
-        if key in rooms:
-            emit("room_error", {
-                "text": "That room already exists. Select it to join."
-            })
+    with lock:
+        if name in rooms:
+            socketio.emit(
+                "room_error",
+                {"text": "A room with that name already exists."},
+                to=sid,
+            )
             return
 
         if len(rooms) >= MAX_ROOMS:
-            emit("room_error", {
-                "text": "The server room limit has been reached."
-            })
+            socketio.emit(
+                "room_error",
+                {"text": "The server has reached its room limit."},
+                to=sid,
+            )
             return
 
-        rooms[key] = {
-            "name": name,
+        rooms[name] = {
             "password_hash": generate_password_hash(password),
-            "history": deque(maxlen=MAX_MESSAGES_PER_ROOM),
+            "messages": [],
         }
 
-    failed_joins.pop(request.sid, None)
-    switch_to_room(key, silent=False)
-    emit("room_joined", {"name": name, "history": []})
-    post_system_message(key, "A user has joined")
-    socketio.emit("room_list", public_room_list())
+    # If the user was already in a room, leave that room first.
+    remove_user_from_room(sid)
+
+    with lock:
+        # The new room may have been removed if the user was already
+        # connected to it through another action, so verify it still exists.
+        if name not in rooms:
+            socketio.emit(
+                "room_error",
+                {"text": "That room no longer exists. Please create it again."},
+                to=sid,
+            )
+            return
+
+        current_room[sid] = name
+        silent_join[sid] = False
+
+    socket_join_room(name, sid=sid)
+    post_chat_message(name, "System", "A user has joined", system=True)
+
+    with lock:
+        history = list(rooms[name]["messages"])
+
+    socketio.emit(
+        "room_joined",
+        {"name": name, "history": history},
+        to=sid,
+    )
+    broadcast_room_list()
 
 
 @socketio.on("join_room")
-def on_join_room(data):
+def handle_join_room(data):
+    sid = request_sid()
+
     if not isinstance(data, dict):
-        emit("room_error", {"text": "Enter a room name and password."})
+        socketio.emit("room_error", {"text": "Invalid room details."}, to=sid)
         return
 
-    name = clean_room_name(data.get("name", ""))
+    name = str(data.get("name", "")).strip()
     password = str(data.get("password", ""))
-    key = room_key(name)
 
-    if failed_joins.get(request.sid, 0) >= 8:
-        emit("room_error", {
-            "text": "Too many incorrect attempts. Refresh the page to try again."
-        })
-        return
-
-    with rooms_lock:
-        room = rooms.get(key)
-
-        master_used = bool(
-            MASTER_PASSWORD
-            and hmac.compare_digest(password, MASTER_PASSWORD)
-        )
-
-        room_password_ok = bool(
-            room
-            and check_password_hash(room["password_hash"], password)
-        )
-
-        password_ok = master_used or room_password_ok
-        room_name = room["name"] if room and password_ok else ""
-        history = list(room["history"]) if room and password_ok else []
-
-    if not room or not password_ok:
-        failed_joins[request.sid] = failed_joins.get(request.sid, 0) + 1
-        emit("room_error", {
-            "text": "Room not found or password incorrect."
-        })
-        return
-
-    failed_joins.pop(request.sid, None)
-    switch_to_room(key, silent=master_used)
-
-    emit("room_joined", {"name": room_name, "history": history})
-
-    # Master-password entry is silent. Ordinary entry is announced.
-    if not master_used:
-        post_system_message(key, "A user has joined")
-
-    socketio.emit("room_list", public_room_list())
-
-
-@socketio.on("chat_message")
-def on_chat_message(data):
-    if not isinstance(data, dict):
-        return
-
-    # The server decides which room the sender belongs to.
-    key = current_room.get(request.sid)
-
-    if not key:
-        emit("notice", {
-            "text": "Create or join a password-protected room first."
-        })
-        return
-
-    username = str(data.get("username", "Guest")).strip()
-    message = str(data.get("message", "")).strip()
-
-    username = "".join(
-        ch for ch in username if ch.isalnum() or ch in " _-"
-    )[:20].strip()
-
-    if not username:
-        username = "Guest"
-
-    if not message or len(message) > MAX_MESSAGE_LENGTH:
-        emit("notice", {
-            "text": f"Messages must be 1–{MAX_MESSAGE_LENGTH} characters."
-        })
-        return
-
-    now = time.monotonic()
-    previous = last_sent.get(request.sid, 0)
-
-    if now - previous < MIN_SECONDS_BETWEEN_MESSAGES:
-        emit("notice", {
-            "text": "You're sending messages too quickly. Please slow down."
-        })
-        return
-
-    last_sent[request.sid] = now
-
-    item = {
-        "username": username,
-        "message": message,
-        "time": datetime.now(timezone.utc).strftime("%H:%M UTC"),
-        "system": False,
-    }
-
-    with rooms_lock:
-        room = rooms.get(key)
+    with lock:
+        room = rooms.get(name)
 
         if room is None:
-            emit("notice", {
-                "text": "That room is no longer available. Please join again."
-            })
+            socketio.emit(
+                "room_error",
+                {"text": "That room does not exist anymore."},
+                to=sid,
+            )
             return
 
-        room["history"].append(item)
+        password_matches = check_password_hash(
+            room["password_hash"], password
+        )
 
-    socketio.emit("chat_message", item, to=channel_name(key))
+        master_matches = bool(MASTER_PASSWORD) and hmac.compare_digest(
+            password.encode("utf-8"),
+            MASTER_PASSWORD.encode("utf-8"),
+        )
+
+        if not password_matches and not master_matches:
+            failed_joins[sid] = failed_joins.get(sid, 0) + 1
+            socketio.emit(
+                "room_error",
+                {"text": "Incorrect password."},
+                to=sid,
+            )
+            return
+
+        history = list(room["messages"])
+
+    # Leave the previous room, if there is one.
+    remove_user_from_room(sid)
+
+    with lock:
+        # Recheck the room in case it was deleted during the transition.
+        room = rooms.get(name)
+
+        if room is None:
+            socketio.emit(
+                "room_error",
+                {"text": "That room no longer exists. Please select another."},
+                to=sid,
+            )
+            return
+
+        current_room[sid] = name
+        silent_join[sid] = master_matches and not password_matches
+        history = list(room["messages"])
+
+    socket_join_room(name, sid=sid)
+
+    if not (master_matches and not password_matches):
+        post_chat_message(name, "System", "A user has joined", system=True)
+
+    socketio.emit(
+        "room_joined",
+        {"name": name, "history": history},
+        to=sid,
+    )
+    broadcast_room_list()
 
 
 @socketio.on("leave_room")
-def on_leave_room():
-    sid = request.sid
-    key = current_room.get(sid)
+def handle_leave_room():
+    sid = request_sid()
+    remove_user_from_room(sid)
+    socketio.emit("room_left", {}, to=sid)
 
-    if key:
-        # Notify the remaining room members before this connection leaves.
-        post_system_message(key, "A user has left")
-        leave_room(channel_name(key))
-        current_room.pop(sid, None)
-        silent_join.pop(sid, None)
 
-        emit("room_left", {})
-        socketio.emit("room_list", public_room_list())
+@socketio.on("chat_message")
+def handle_chat_message(data):
+    sid = request_sid()
+
+    if not isinstance(data, dict):
+        return
+
+    message = str(data.get("message", "")).strip()
+
+    if not message or len(message) > MAX_MESSAGE_LENGTH:
+        socketio.emit(
+            "notice",
+            {"text": f"Messages must be between 1 and {MAX_MESSAGE_LENGTH} characters."},
+            to=sid,
+        )
+        return
+
+    now = time.monotonic()
+    previous = last_sent.get(sid, 0)
+
+    if now - previous < MESSAGE_COOLDOWN:
+        socketio.emit(
+            "notice",
+            {"text": "Please wait a moment before sending another message."},
+            to=sid,
+        )
+        return
+
+    with lock:
+        room_name = current_room.get(sid)
+
+        if room_name is None or room_name not in rooms:
+            socketio.emit(
+                "notice",
+                {"text": "Join a room before sending a message."},
+                to=sid,
+            )
+            return
+
+        last_sent[sid] = now
+
+    # The username is intentionally assigned by the server.
+    post_chat_message(room_name, "User", message, system=False)
 
 
 @socketio.on("disconnect")
-def on_disconnect(reason=None):
-    sid = request.sid
-    key = current_room.get(sid)
+def handle_disconnect(reason=None):
+    sid = request_sid()
+    remove_user_from_room(sid)
 
-    if key:
-        post_system_message(key, "A user has left")
 
-    current_room.pop(sid, None)
-    silent_join.pop(sid, None)
-    last_sent.pop(sid, None)
-    failed_joins.pop(sid, None)
-
-    socketio.emit("room_list", public_room_list())
+def request_sid():
+    """Return the current Socket.IO connection ID."""
+    from flask import request
+    return request.sid
 
 
 if __name__ == "__main__":
-    socketio.run(app, host="127.0.0.1", port=5000, debug=False)
+    socketio.run(
+        app,
+        host="127.0.0.1",
+        port=5000,
+        debug=False,
+    )
