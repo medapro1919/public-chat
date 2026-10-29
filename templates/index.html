@@ -1,95 +1,439 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Open Chat</title>
-  <style>
-    :root { color-scheme: dark; --bg:#0b1020; --panel:#121a2d; --line:#27334d; --text:#eef3ff; --muted:#9aa8c4; --accent:#8b5cf6; }
-    * { box-sizing:border-box; }
-    body { margin:0; min-height:100vh; display:grid; place-items:center; padding:20px; background:radial-gradient(ellipse at top,#182344,var(--bg) 60%); color:var(--text); font:16px/1.45 system-ui,-apple-system,sans-serif; }
-    .app { width:min(760px,100%); height:min(820px,calc(100vh - 40px)); min-height:520px; display:flex; flex-direction:column; background:rgba(18,26,45,.96); border:1px solid var(--line); border-radius:22px; overflow:hidden; box-shadow:0 24px 80px #0006; }
-    header { padding:22px 24px; border-bottom:1px solid var(--line); display:flex; align-items:center; justify-content:space-between; gap:12px; }
-    h1 { margin:0; font-size:1.35rem; letter-spacing:-.03em; } .sub { color:var(--muted); font-size:.88rem; margin-top:4px; }
-    .status { color:#a7f3d0; font-size:.8rem; white-space:nowrap; } .status:before { content:""; display:inline-block; width:7px;height:7px;border-radius:50%;background:#34d399;margin-right:7px; }
-    .warning { padding:10px 24px; background:#2a2140; color:#dcd3ff; font-size:.82rem; border-bottom:1px solid var(--line); }
-    #messages { flex:1; overflow:auto; padding:20px 24px; display:flex; flex-direction:column; gap:12px; }
-    .empty { margin:auto; color:var(--muted); text-align:center; }
-    .msg { overflow-wrap:anywhere; border:1px solid var(--line); border-radius:14px; padding:10px 13px; background:#182238; }
-    .meta { display:flex; gap:10px; align-items:baseline; margin-bottom:4px; } .name { font-weight:700; color:#c4b5fd; } .time { color:var(--muted); font-size:.75rem; }
-    .body { white-space:pre-wrap; }
-    form { padding:16px; border-top:1px solid var(--line); display:grid; grid-template-columns:140px 1fr auto; gap:9px; }
-    input,button { font:inherit; border-radius:11px; border:1px solid var(--line); padding:12px; min-width:0; }
-    input { background:#0d1425; color:var(--text); outline:none; } input:focus { border-color:var(--accent); }
-    button { background:var(--accent); color:white; border:0; font-weight:700; cursor:pointer; padding-inline:18px; } button:disabled { opacity:.5; cursor:not-allowed; }
-    #notice { min-height:20px; padding:0 20px 8px; color:#fbbf24; font-size:.82rem; }
-    @media(max-width:560px) { body { padding:0; } .app { height:100vh; min-height:0; border-radius:0; } header { padding:18px; } #messages { padding:16px; } form { grid-template-columns:1fr auto; } #username { grid-column:1/-1; } .warning { padding-inline:18px; } }
-  </style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Private Rooms Chat</title>
+<style>
+:root {
+  color-scheme: dark;
+  --bg: #0b1020;
+  --panel: #121a2d;
+  --line: #27334d;
+  --text: #eef3ff;
+  --muted: #9aa8c4;
+  --accent: #8b5cf6;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; min-height: 100vh; display: grid; place-items: center;
+  padding: 20px;
+  background: radial-gradient(ellipse at top, #182344, var(--bg) 60%);
+  color: var(--text); font: 16px/1.45 system-ui, sans-serif;
+}
+.app {
+  width: min(1000px, 100%); min-height: min(820px, calc(100vh - 40px));
+  display: flex; flex-direction: column; overflow: hidden;
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: 22px; box-shadow: 0 24px 80px #0006;
+}
+header {
+  padding: 20px 24px; border-bottom: 1px solid var(--line);
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+}
+h1 { margin: 0; font-size: 1.35rem; }
+h2 { font-size: .95rem; margin: 0 0 12px; }
+.sub, .small { color: var(--muted); font-size: .82rem; }
+.sub { margin-top: 4px; }
+.status { color: #a7f3d0; font-size: .8rem; }
+.warning {
+  padding: 10px 24px; background: #2a2140; color: #dcd3ff;
+  font-size: .82rem; border-bottom: 1px solid var(--line);
+}
+.layout {
+  display: grid; grid-template-columns: 290px minmax(0, 1fr);
+  flex: 1; min-height: 0;
+}
+aside { padding: 18px; border-right: 1px solid var(--line); background: #0e1628; }
+.panel { border: 1px solid var(--line); border-radius: 14px; padding: 13px; margin-bottom: 14px; }
+label { display: block; color: var(--muted); font-size: .8rem; margin: 8px 0 5px; }
+input, button {
+  font: inherit; border-radius: 10px; padding: 10px 11px; min-width: 0; width: 100%;
+}
+input { border: 1px solid var(--line); background: var(--bg); color: var(--text); }
+input:focus { outline: 1px solid var(--accent); }
+button {
+  background: var(--accent); color: white; border: 0;
+  font-weight: 700; cursor: pointer; margin-top: 9px;
+}
+button.secondary { background: #202b44; border: 1px solid var(--line); }
+button:disabled { opacity: .5; cursor: not-allowed; }
+#room-list {
+  display: flex; flex-direction: column; gap: 7px;
+  max-height: 260px; overflow: auto;
+}
+.room-item {
+  display: flex; align-items: center; gap: 7px; background: #182238;
+  border: 1px solid var(--line); padding: 8px; border-radius: 9px;
+}
+.room-name { min-width: 0; overflow-wrap: anywhere; flex: 1; font-size: .85rem; }
+.room-item button { margin: 0; padding: 6px 8px; width: auto; }
+.chat { display: flex; flex-direction: column; min-height: 540px; min-width: 0; }
+.chat-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 16px 20px; border-bottom: 1px solid var(--line);
+}
+.chat-head button { width: auto; margin: 0; }
+#messages {
+  flex: 1; min-height: 260px; overflow: auto; padding: 20px;
+  display: flex; flex-direction: column; gap: 12px;
+}
+.empty { margin: auto; color: var(--muted); text-align: center; padding: 20px; }
+.msg {
+  overflow-wrap: anywhere; border: 1px solid var(--line);
+  border-radius: 14px; padding: 10px 13px; background: #182238;
+}
+.msg.system { background: #211d3b; border-color: #4c3c78; }
+.meta { display: flex; gap: 10px; align-items: baseline; margin-bottom: 4px; }
+.name { font-weight: 700; color: #c4b5fd; }
+.msg.system .name { color: #d8b4fe; }
+.time { color: var(--muted); font-size: .75rem; }
+.body { white-space: pre-wrap; }
+#form {
+  padding: 16px; border-top: 1px solid var(--line);
+  display: grid; grid-template-columns: 130px minmax(0, 1fr) auto; gap: 9px;
+}
+#form button { width: auto; margin: 0; }
+#notice { min-height: 26px; padding: 4px 20px 8px; color: #fbbf24; font-size: .82rem; }
+dialog {
+  width: min(420px, calc(100% - 28px));
+  background: var(--panel); color: var(--text);
+  border: 1px solid var(--line); border-radius: 18px; padding: 22px;
+  box-shadow: 0 24px 80px #0009;
+}
+dialog::backdrop { background: #030712bb; }
+.dialog-actions { display: flex; gap: 9px; }
+.dialog-actions button { flex: 1; }
+@media (max-width: 700px) {
+  body { padding: 0; }
+  .app { min-height: 100vh; border-radius: 0; }
+  .layout { grid-template-columns: 1fr; }
+  aside { border-right: 0; border-bottom: 1px solid var(--line); }
+  #room-list { max-height: 150px; }
+  .chat { min-height: 480px; }
+  header { padding: 17px; }
+  .warning { padding-inline: 17px; }
+  #form { grid-template-columns: 1fr auto; }
+  #username { grid-column: 1 / -1; }
+}
+</style>
 </head>
 <body>
-  <main class="app">
-    <header>
-      <div><h1>Open Chat</h1><div class="sub">A little corner of the internet.</div></div>
-      <div class="status" id="status">Connecting</div>
-    </header>
-    <div class="warning">Public chat: don't share passwords, your address, school details, or other private information. Messages are not saved permanently.</div>
-    <section id="messages" aria-live="polite"><div class="empty" id="empty">Joining the chat…</div></section>
-    <div id="notice" role="status"></div>
-    <form id="form">
-      <input id="username" maxlength="20" placeholder="Username" autocomplete="nickname" aria-label="Username">
-      <input id="message" maxlength="500" placeholder="Type a message…" autocomplete="off" aria-label="Message" required>
-      <button id="send" type="submit">Send</button>
-    </form>
-  </main>
-  <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
-  <script>
-    const socket = io();
-    const messages = document.getElementById('messages');
-    const empty = document.getElementById('empty');
-    const form = document.getElementById('form');
-    const username = document.getElementById('username');
-    const input = document.getElementById('message');
-    const status = document.getElementById('status');
-    const notice = document.getElementById('notice');
+<main class="app">
+  <header>
+    <div>
+      <h1>Private Rooms Chat</h1>
+      <div class="sub">Pick a room or create one and invite your friends.</div>
+    </div>
+    <div class="status" id="status">Connecting…</div>
+  </header>
 
-    function addMessage(item) {
-      if (empty) empty.remove();
-      const card = document.createElement('article');
-      card.className = 'msg';
-      const meta = document.createElement('div');
-      meta.className = 'meta';
-      const name = document.createElement('span');
-      name.className = 'name';
-      name.textContent = item.username;
-      const time = document.createElement('span');
-      time.className = 'time';
-      time.textContent = item.time || '';
-      const body = document.createElement('div');
-      body.className = 'body';
-      // textContent prevents messages being interpreted as HTML.
-      body.textContent = item.message;
-      meta.append(name, time);
-      card.append(meta, body);
-      messages.append(card);
-      while (messages.children.length > 101) messages.removeChild(messages.firstChild);
-      messages.scrollTop = messages.scrollHeight;
-    }
+  <div class="warning">
+    Room names are public. A room password is required to enter.
+    Messages and rooms may reset when the server restarts.
+  </div>
 
-    socket.on('connect', () => { status.textContent = 'Connected'; });
-    socket.on('disconnect', () => { status.textContent = 'Reconnecting…'; });
-    socket.on('history', history => { history.forEach(addMessage); });
-    socket.on('chat_message', addMessage);
-    socket.on('notice', data => { notice.textContent = data.text || 'Message not sent.'; });
+  <div class="layout">
+    <aside>
+      <section class="panel">
+        <h2>Create a room</h2>
+        <label for="create-name">Room name</label>
+        <input id="create-name" maxlength="30" placeholder="e.g. game-night">
+        <label for="create-password">Room password (8–128 characters)</label>
+        <input id="create-password" type="password" maxlength="128"
+               autocomplete="new-password" placeholder="Choose a password">
+        <button id="create-button" type="button">Create &amp; join</button>
+      </section>
 
-    form.addEventListener('submit', event => {
-      event.preventDefault();
-      const message = input.value.trim();
-      if (!message) return;
-      socket.emit('chat_message', { username: username.value.trim() || 'Guest', message });
-      input.value = '';
-      notice.textContent = '';
-      input.focus();
-    });
-  </script>
+      <section class="panel">
+        <h2>Join by name</h2>
+        <label for="join-name">Room name</label>
+        <input id="join-name" maxlength="30" placeholder="Room name">
+        <label for="join-password">Room password</label>
+        <input id="join-password" type="password" maxlength="128"
+               autocomplete="current-password" placeholder="Room password">
+        <button id="join-button" type="button">Join room</button>
+      </section>
+
+      <h2>Available rooms</h2>
+      <div id="room-list"><div class="small">Loading rooms…</div></div>
+      <p class="small">Select a room to enter its password. User counts show people currently inside.</p>
+    </aside>
+
+    <section class="chat">
+      <div class="chat-head">
+        <div>
+          <strong id="current-room">No room joined</strong>
+          <div class="small" id="chat-subtitle">Create or join a room to start chatting.</div>
+        </div>
+        <button class="secondary" id="leave-button" type="button" hidden>Leave</button>
+      </div>
+
+      <section id="messages" aria-live="polite">
+        <div class="empty" id="empty">You're not in a room yet.</div>
+      </section>
+      <div id="notice" role="status" aria-live="polite"></div>
+
+      <form id="form">
+        <input id="username" maxlength="20" placeholder="Username"
+               autocomplete="nickname" aria-label="Username">
+        <input id="message" maxlength="500" placeholder="Join a room to send a message…"
+               autocomplete="off" aria-label="Message" required disabled>
+        <button id="send" type="submit" disabled>Send</button>
+      </form>
+    </section>
+  </div>
+</main>
+
+<dialog id="password-dialog">
+  <h2 id="dialog-title">Enter room password</h2>
+  <p class="small">Enter this room's password, or use the master password.</p>
+  <form id="dialog-form">
+    <label for="dialog-password">Password</label>
+    <input id="dialog-password" type="password" maxlength="128"
+           autocomplete="current-password" required>
+    <div class="dialog-actions">
+      <button class="secondary" id="cancel-dialog" type="button">Cancel</button>
+      <button type="submit">Join room</button>
+    </div>
+  </form>
+</dialog>
+
+<script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+<script>
+const socket = io();
+const $ = id => document.getElementById(id);
+const messages = $('messages');
+const passwordDialog = $('password-dialog');
+
+let empty = $('empty');
+let activeRoom = null;
+let pendingRoomName = '';
+
+function showNotice(text) {
+  $('notice').textContent = text || '';
+}
+
+function resetMessages(text) {
+  messages.replaceChildren();
+  empty = document.createElement('div');
+  empty.className = 'empty';
+  empty.textContent = text;
+  messages.append(empty);
+}
+
+function addMessage(item) {
+  if (empty) {
+    empty.remove();
+    empty = null;
+  }
+
+  const card = document.createElement('article');
+  card.className = item.system ? 'msg system' : 'msg';
+
+  const meta = document.createElement('div');
+  meta.className = 'meta';
+
+  const name = document.createElement('span');
+  name.className = 'name';
+  name.textContent = item.username;
+
+  const time = document.createElement('span');
+  time.className = 'time';
+  time.textContent = item.time || '';
+
+  const body = document.createElement('div');
+  body.className = 'body';
+  body.textContent = item.message;
+
+  meta.append(name, time);
+  card.append(meta, body);
+  messages.append(card);
+
+  while (messages.children.length > 101) {
+    messages.removeChild(messages.firstChild);
+  }
+
+  messages.scrollTop = messages.scrollHeight;
+}
+
+function requestJoin(name, password) {
+  if (!name || !password) {
+    showNotice('Enter both the room name and password.');
+    return;
+  }
+
+  socket.emit('join_room', {name, password});
+  showNotice('Checking password…');
+}
+
+function openRoomPassword(name) {
+  pendingRoomName = name;
+  $('dialog-title').textContent = 'Enter password for ' + name;
+  $('dialog-password').value = '';
+  showNotice('');
+  passwordDialog.showModal();
+  $('dialog-password').focus();
+}
+
+function renderRooms(list) {
+  const holder = $('room-list');
+  holder.replaceChildren();
+
+  if (!list.length) {
+    const note = document.createElement('div');
+    note.className = 'small';
+    note.textContent = 'No rooms yet. Create the first one!';
+    holder.append(note);
+    return;
+  }
+
+  list.forEach(room => {
+    const row = document.createElement('div');
+    row.className = 'room-item';
+
+    const name = document.createElement('span');
+    name.className = 'room-name';
+    name.textContent = room.name;
+
+    const count = document.createElement('span');
+    count.className = 'small';
+    count.textContent = String(room.users);
+    count.title = 'People currently in this room';
+
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = 'Select';
+    button.addEventListener('click', () => openRoomPassword(room.name));
+
+    row.append(name, count, button);
+    holder.append(row);
+  });
+}
+
+socket.on('connect', () => {
+  $('status').textContent = 'Connected';
+});
+
+socket.on('disconnect', () => {
+  $('status').textContent = 'Reconnecting…';
+});
+
+socket.on('connect_error', () => {
+  $('status').textContent = 'Connection error';
+  showNotice('Could not connect. The server may be starting or restarting.');
+});
+
+socket.on('room_list', renderRooms);
+
+socket.on('room_error', data => {
+  showNotice(data.text || 'Could not enter that room.');
+});
+
+socket.on('notice', data => {
+  showNotice(data.text || 'Message not sent.');
+});
+
+socket.on('room_joined', data => {
+  activeRoom = data.name;
+  $('current-room').textContent = data.name;
+  $('chat-subtitle').textContent = 'You are inside this password-protected room.';
+  $('leave-button').hidden = false;
+  $('message').disabled = false;
+  $('send').disabled = false;
+  $('message').placeholder = 'Type a message…';
+
+  resetMessages(
+    data.history && data.history.length
+      ? ''
+      : 'No messages yet. Start the conversation!'
+  );
+
+  if (data.history) data.history.forEach(addMessage);
+
+  showNotice('');
+  $('join-password').value = '';
+  $('create-password').value = '';
+  $('dialog-password').value = '';
+
+  if (passwordDialog.open) passwordDialog.close();
+});
+
+socket.on('room_left', () => {
+  activeRoom = null;
+  $('current-room').textContent = 'No room joined';
+  $('chat-subtitle').textContent = 'Create or join a room to start chatting.';
+  $('leave-button').hidden = true;
+  $('message').disabled = true;
+  $('send').disabled = true;
+  $('message').placeholder = 'Join a room to send a message…';
+  resetMessages("You're not in a room yet.");
+});
+
+socket.on('chat_message', item => {
+  if (activeRoom) addMessage(item);
+});
+
+$('create-button').addEventListener('click', () => {
+  const name = $('create-name').value.trim();
+  const password = $('create-password').value;
+
+  if (!name || !password) {
+    showNotice('Enter a room name and choose a password.');
+    return;
+  }
+
+  if (password.length < 8 || password.length > 128) {
+    showNotice('Choose a password between 8 and 128 characters.');
+    return;
+  }
+
+  socket.emit('create_room', {name, password});
+  showNotice('Creating room…');
+});
+
+$('join-button').addEventListener('click', () => {
+  requestJoin($('join-name').value.trim(), $('join-password').value);
+});
+
+$('join-password').addEventListener('keydown', event => {
+  if (event.key === 'Enter') {
+    event.preventDefault();
+    requestJoin($('join-name').value.trim(), $('join-password').value);
+  }
+});
+
+$('dialog-form').addEventListener('submit', event => {
+  event.preventDefault();
+
+  const password = $('dialog-password').value;
+  const name = pendingRoomName;
+
+  if (!name || !password) return;
+
+  passwordDialog.close();
+  requestJoin(name, password);
+});
+
+$('cancel-dialog').addEventListener('click', () => passwordDialog.close());
+
+$('leave-button').addEventListener('click', () => socket.emit('leave_room'));
+
+$('form').addEventListener('submit', event => {
+  event.preventDefault();
+
+  const message = $('message').value.trim();
+  if (!message || !activeRoom) return;
+
+  socket.emit('chat_message', {
+    username: $('username').value.trim() || 'Guest',
+    message
+  });
+
+  $('message').value = '';
+  showNotice('');
+  $('message').focus();
+});
+</script>
 </body>
 </html>
