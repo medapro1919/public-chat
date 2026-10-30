@@ -1,4 +1,3 @@
-
 import os
 import re
 import hmac
@@ -460,6 +459,16 @@ def handle_chat_message(data):
 
     message = str(data.get("message", "")).strip()
 
+    # Accept either "username" or "name" from the website's JavaScript.
+    username = str(
+        data.get("username", data.get("name", "Guest"))
+    ).strip()
+
+    # Keep display names short and on one line.
+    username = re.sub(r"[\\r\\n\\t]+", " ", username)
+    username = re.sub(r"\\s+", " ", username).strip()
+    username = username[:20] or "Guest"
+
     if not message or len(message) > MAX_MESSAGE_LENGTH:
         socketio.emit(
             "notice",
@@ -501,7 +510,7 @@ def handle_chat_message(data):
 
         last_sent[sid] = now
 
-    post_chat_message(room_name, "User", message, system=False)
+    post_chat_message(room_name, username, message, system=False)
 
 
 @socketio.on("disconnect")
